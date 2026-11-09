@@ -1,0 +1,119 @@
+name: Build iPhone IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    # Standard hosted runners are free for public repositories.
+    if: github.event.repository.private == false
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Check Unity activation settings
+        shell: bash
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        run: |
+          for setting in UNITY_LICENSE UNITY_EMAIL UNITY_PASSWORD; do
+            if [ -z "${!setting}" ]; then
+              echo "::error::Add the $setting repository Actions secret before building."
+              exit 1
+            fi
+          done
+
+      - name: Export CardboardXR with its own scene builder
+        uses: game-ci/unity-builder@4423ee75828dff56037d1d1cfdac6b68e3a6ba00 # v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          unityVersion: 6000.6.8f1
+          targetPlatform: iOS
+          buildMethod: ProjectBootstrap.StereoBuilder.BuildIos
+          manualExit: true
+          versioning: None
+
+      - name: Package Xcode export
+        shell: bash
+        run: |
+          test -d Builds/iOS/Unity-iPhone.xcodeproj
+          # Resolve export symlinks before moving the project to a different machine.
+          tar --dereference -czf "$RUNNER_TEMP/cardboardxr-xcode.tar.gz" -C Builds/iOS .
+
+      - name: Save Xcode project for the macOS job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cardboardxr-xcode
+          path: ${{ runner.temp }}/cardboardxr-xcode.tar.gz
+          retention-days: 3
+          if-no-files-found: error
+
+  compile:
+    needs: export
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: cardboardxr-xcode
+          path: ${{ runner.temp }}/export
+
+      - name: Compile for a physical iPhone
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/xcode-project"
+          tar -xzf "$RUNNER_TEMP/export/cardboardxr-xcode.tar.gz" -C "$RUNNER_TEMP/xcode-project"
+          xcodebuild -version
+          xcodebuild \
+            -project "$RUNNER_TEMP/xcode-project/Unity-iPhone.xcodeproj" \
+            -scheme Unity-iPhone \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/derived" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            build 2>&1 | tee "$RUNNER_TEMP/xcode-build.log"
+
+      - name: Package IPA for a sideloading tool to sign
+        shell: bash
+        run: |
+          app="$RUNNER_TEMP/derived/Build/Products/Release-iphoneos/Unity-iPhone.app"
+          test -f "$app/Info.plist"
+          executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")
+          test -f "$app/$executable"
+          lipo -verify_arch arm64 "$app/$executable"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          ditto "$app" "$RUNNER_TEMP/ipa/Payload/Unity-iPhone.app"
+          cd "$RUNNER_TEMP/ipa"
+          ditto -c -k --keepParent Payload "$RUNNER_TEMP/CardboardXR-unsigned.ipa"
+          unzip -t "$RUNNER_TEMP/CardboardXR-unsigned.ipa"
+          echo '### CardboardXR IPA' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Download the CardboardXR-IPA artifact, extract its ZIP, and sign/install the IPA using your sideloading tool.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save IPA
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: CardboardXR-IPA
+          path: ${{ runner.temp }}/CardboardXR-unsigned.ipa
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Save Xcode build log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cardboardxr-xcode-log
+          path: ${{ runner.temp }}/xcode-build.log
+          retention-days: 3
+          if-no-files-found: ignore
