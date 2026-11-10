@@ -49,13 +49,19 @@ jobs:
       - name: Package IPA for a sideloading tool to sign
         shell: bash
         run: |
-          app="$RUNNER_TEMP/derived/Build/Products/Release-iphoneos/Unity-iPhone.app"
+          shopt -s nullglob
+          apps=("$RUNNER_TEMP/derived/Build/Products/Release-iphoneos/"*.app)
+          if [ "${#apps[@]}" -ne 1 ]; then
+            echo '::error::Expected one compiled iPhone app.'
+            exit 1
+          fi
+          app="${apps[0]}"
           test -f "$app/Info.plist"
           executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")
           test -f "$app/$executable"
           lipo -verify_arch arm64 "$app/$executable"
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
-          ditto "$app" "$RUNNER_TEMP/ipa/Payload/Unity-iPhone.app"
+          ditto "$app" "$RUNNER_TEMP/ipa/Payload/$(basename "$app")"
           cd "$RUNNER_TEMP/ipa"
           ditto -c -k --keepParent Payload "$RUNNER_TEMP/CardboardXR-unsigned.ipa"
           unzip -t "$RUNNER_TEMP/CardboardXR-unsigned.ipa"
