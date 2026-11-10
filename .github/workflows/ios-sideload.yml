@@ -2,70 +2,31 @@ name: Build iPhone IPA
 
 on:
   workflow_dispatch:
+    inputs:
+      export_release:
+        description: Release tag containing cardboardxr-xcode.tar.gz
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 jobs:
-  export:
+  compile:
     # Standard hosted runners are free for public repositories.
     if: github.event.repository.private == false
-    runs-on: ubuntu-22.04
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Check Unity activation settings
-        shell: bash
-        env:
-          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
-          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
-          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
-        run: |
-          for setting in UNITY_LICENSE UNITY_EMAIL UNITY_PASSWORD; do
-            if [ -z "${!setting}" ]; then
-              echo "::error::Add the $setting repository Actions secret before building."
-              exit 1
-            fi
-          done
-
-      - name: Export CardboardXR with its own scene builder
-        uses: game-ci/unity-builder@4423ee75828dff56037d1d1cfdac6b68e3a6ba00 # v4
-        env:
-          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
-          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
-          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
-        with:
-          unityVersion: 6000.6.8f1
-          targetPlatform: iOS
-          buildMethod: ProjectBootstrap.StereoBuilder.BuildIos
-          manualExit: true
-          versioning: None
-
-      - name: Package Xcode export
-        shell: bash
-        run: |
-          test -d Builds/iOS/Unity-iPhone.xcodeproj
-          # Resolve export symlinks before moving the project to a different machine.
-          tar --dereference -czf "$RUNNER_TEMP/cardboardxr-xcode.tar.gz" -C Builds/iOS .
-
-      - name: Save Xcode project for the macOS job
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: cardboardxr-xcode
-          path: ${{ runner.temp }}/cardboardxr-xcode.tar.gz
-          retention-days: 3
-          if-no-files-found: error
-
-  compile:
-    needs: export
     runs-on: macos-26
     timeout-minutes: 90
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: cardboardxr-xcode
-          path: ${{ runner.temp }}/export
+      - name: Download the Windows-generated Xcode project
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPORT_RELEASE: ${{ inputs.export_release }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/export"
+          gh release download "$EXPORT_RELEASE" --repo "$GITHUB_REPOSITORY" \
+            --pattern cardboardxr-xcode.tar.gz --dir "$RUNNER_TEMP/export"
 
       - name: Compile for a physical iPhone
         shell: bash
