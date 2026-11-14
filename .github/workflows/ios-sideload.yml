@@ -9,7 +9,8 @@ on:
         type: string
 
 permissions:
-  contents: read
+  # Draft build inputs require repository push access to be visible.
+  contents: write
 
 jobs:
   compile:
